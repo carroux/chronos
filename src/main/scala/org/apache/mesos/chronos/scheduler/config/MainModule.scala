@@ -3,6 +3,7 @@ package org.apache.mesos.chronos.scheduler.config
 import java.lang.Thread.UncaughtExceptionHandler
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.logging.{Level, Logger}
+import javax.inject.Named
 
 import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.util.Timeout
@@ -10,7 +11,7 @@ import org.apache.mesos.chronos.notification.{JobNotificationObserver, MailClien
 import org.apache.mesos.chronos.scheduler.graph.JobGraph
 import org.apache.mesos.chronos.scheduler.jobs.stats.JobStats
 import org.apache.mesos.chronos.scheduler.jobs.{JobsObserver, JobMetrics, JobScheduler, TaskManager}
-import org.apache.mesos.chronos.scheduler.mesos.{MesosDriverFactory, MesosJobFramework, MesosTaskBuilder}
+import org.apache.mesos.chronos.scheduler.mesos._
 import org.apache.mesos.chronos.scheduler.state.PersistenceStore
 import com.google.common.util.concurrent.{ListeningScheduledExecutorService, MoreExecutors, ThreadFactoryBuilder}
 import com.google.inject.{AbstractModule, Inject, Provides, Singleton}
@@ -115,10 +116,13 @@ class MainModule(val config: SchedulerConfiguration with HttpConf)
     JobsObserver.composite(List(notifier.asObserver, jobStats.asObserver))
   }
 
+  @Provides
+  @Singleton
+  def provideActorSystem(): ActorSystem = ActorSystem("chronos-actors")
+
   @Singleton
   @Provides
-  def provideNotificationClients(): List[ActorRef] = {
-    implicit val system = ActorSystem("chronos-actors")
+  def provideNotificationClients(system: ActorSystem): List[ActorRef] = {
     implicit val timeout = Timeout(36500 days)
 
     def create(clazz: Class[_], args: scala.Any*): ActorRef = {
@@ -156,5 +160,25 @@ class MainModule(val config: SchedulerConfiguration with HttpConf)
     MoreExecutors.listeningDecorator(new ScheduledThreadPoolExecutor(5,
       new ThreadFactoryBuilder().setNameFormat("task_executor_thread-%d")
         .setUncaughtExceptionHandler(uncaughtExceptionHandler).build()))
+  }
+
+  @Named(MesosOfferReviverActor.NAME)
+  @Provides
+  @Singleton
+  @Inject
+  def provideOfferReviverActor(
+                                system: ActorSystem,
+                                conf: SchedulerConfiguration,
+                                mesosDriverFactory: MesosDriverFactory): ActorRef =
+  {
+    val props = MesosOfferReviverActor.props(conf, mesosDriverFactory)
+    system.actorOf(props, MesosOfferReviverActor.NAME)
+  }
+
+  @Provides
+  @Singleton
+  @Inject
+  def provideOfferReviver(@Named(MesosOfferReviverActor.NAME) reviverRef: ActorRef): MesosOfferReviver = {
+    new MesosOfferReviverDelegate(reviverRef)
   }
 }
